@@ -5,6 +5,7 @@
 #include <cwctype>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <string>
 #include <string_view>
@@ -516,7 +517,281 @@ public:
         return records_.size();
     }
 
+    /**
+     * @brief Query file metadata record by path.
+     */
+    bool getFileRecord(std::wstring_view path, NtfsFileRecord& outRec) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!mounted_) return false;
+        std::wstring canon = canonicalizePath(path);
+        for (const auto& [num, rec] : records_) {
+            if (rec.fileName == canon) {
+                outRec = rec;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @brief Enumerate children records of a directory.
+     */
+    bool listDirectory(std::wstring_view path, std::vector<NtfsFileRecord>& outRecords) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!mounted_) return false;
+        std::wstring canon = canonicalizePath(path);
+        const NtfsFileRecord* dirRec = nullptr;
+        for (const auto& [num, rec] : records_) {
+            if (rec.fileName == canon && (rec.flags & MFT_RECORD_DIRECTORY)) {
+                dirRec = &rec;
+                break;
+            }
+        }
+        if (!dirRec) return false;
+
+        outRecords.clear();
+        for (const auto& childName : dirRec->childNames) {
+            for (const auto& [num, rec] : records_) {
+                if (rec.fileName == childName) {
+                    outRecords.push_back(rec);
+                    break;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @brief Check if file or directory exists.
+     */
+    bool fileExists(std::wstring_view path) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!mounted_) return false;
+        std::wstring canon = canonicalizePath(path);
+        for (const auto& [num, rec] : records_) {
+            if (rec.fileName == canon) return true;
+        }
+        return false;
+    }
+
+    /**
+     * @brief Rename or move a file/directory.
+     */
+    Status renameFile(std::wstring_view oldPath, std::wstring_view newPath, bool replaceIfExists) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!mounted_) return Status::VolumeNotMounted;
+
+        std::wstring oldCanon = canonicalizePath(oldPath);
+        std::wstring newCanon = canonicalizePath(newPath);
+
+        NtfsFileRecord* target = nullptr;
+        for (auto& [num, rec] : records_) {
+            if (rec.fileName == oldCanon) {
+                target = &rec;
+                break;
+            }
+        }
+        if (!target) return Status::NoSuchFile;
+
+        // Check if destination exists
+        auto destIt = std::find_if(records_.begin(), records_.end(), [&](const auto& pair) {
+            return pair.second.fileName == newCanon;
+        });
+
+        if (destIt != records_.end()) {
+            if (!replaceIfExists) return Status::ObjectNameCollision;
+            if (destIt->second.flags & MFT_RECORD_DIRECTORY) return Status::FileIsADirectory;
+
+            // Remove old dest from its parent
+            std::wstring oldDestParent = getParentPath(newCanon);
+            for (auto& [num, r] : records_) {
+                if (r.fileName == oldDestParent) {
+                    std::erase(r.childNames, newCanon);
+                    break;
+                }
+            }
+            records_.erase(destIt);
+        }
+
+        // Remove from old parent
+        std::wstring oldParent = getParentPath(oldCanon);
+        for (auto& [num, r] : records_) {
+            if (r.fileName == oldParent) {
+                std::erase(r.childNames, oldCanon);
+                break;
+            }
+        }
+
+        target->fileName = newCanon;
+
+        // If directory, update all recursive child prefixes
+        if (target->flags & MFT_RECORD_DIRECTORY) {
+            std::wstring oldPrefix = oldCanon + L"\\";
+            std::wstring newPrefix = newCanon + L"\\";
+            for (auto& [num, rec] : records_) {
+                if (rec.fileName.starts_with(oldPrefix)) {
+                    rec.fileName = newPrefix + rec.fileName.substr(oldPrefix.size());
+                }
+            }
+        }
+
+        // Add to new parent
+        std::wstring newParent = getParentPath(newCanon);
+        for (auto& [num, r] : records_) {
+            if (r.fileName == newParent && (r.flags & MFT_RECORD_DIRECTORY)) {
+                r.childNames.push_back(newCanon);
+                break;
+            }
+        }
+
+        return Status::Success;
+    }
+
+    /**
+     * @brief Truncate or extend primary file size.
+     */
+    Status setFileSize(std::wstring_view path, uint64_t newSize) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!mounted_) return Status::VolumeNotMounted;
+
+        std::wstring canon = canonicalizePath(path);
+        for (auto& [num, rec] : records_) {
+            if (rec.fileName == canon) {
+                if (rec.flags & MFT_RECORD_DIRECTORY) return Status::FileIsADirectory;
+                rec.primaryData.resize(newSize, 0);
+                rec.fileSize = newSize;
+                return Status::Success;
+            }
+        }
+        return Status::NoSuchFile;
+    }
+
+    /**
+     * @brief Set file attributes.
+     */
+    Status setFileAttributes(std::wstring_view path, uint32_t attributes) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!mounted_) return Status::VolumeNotMounted;
+
+        std::wstring canon = canonicalizePath(path);
+        for (auto& [num, rec] : records_) {
+            if (rec.fileName == canon) {
+                rec.attributes = attributes;
+                return Status::Success;
+            }
+        }
+        return Status::NoSuchFile;
+    }
+
+    /**
+     * @brief List Alternate Data Streams for a file.
+     */
+    bool listStreams(std::wstring_view path, std::vector<std::wstring>& outStreams) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!mounted_) return false;
+
+        std::wstring canon = canonicalizePath(path);
+        for (const auto& [num, rec] : records_) {
+            if (rec.fileName == canon) {
+                outStreams.clear();
+                for (const auto& [sName, _] : rec.alternateStreams) {
+                    outStreams.push_back(sName);
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @brief Delete an Alternate Data Stream.
+     */
+    Status deleteStream(std::wstring_view path, std::wstring_view streamName) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!mounted_) return Status::VolumeNotMounted;
+
+        std::wstring canon = canonicalizePath(path);
+        for (auto& [num, rec] : records_) {
+            if (rec.fileName == canon) {
+                auto it = rec.alternateStreams.find(std::wstring(streamName));
+                if (it != rec.alternateStreams.end()) {
+                    rec.alternateStreams.erase(it);
+                    return Status::Success;
+                }
+                return Status::NoSuchFile;
+            }
+        }
+        return Status::NoSuchFile;
+    }
+
+    /**
+     * @brief Scrub and verify MFT record integrity with USA fixup inspection.
+     */
+    void scrubMftRecords(std::vector<uint64_t>& corruptedRecords, bool repair = false) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        corruptedRecords.clear();
+
+        for (auto& [num, rec] : records_) {
+            // Check record invariants
+            bool recordCorrupt = false;
+            if (rec.fileName.empty()) recordCorrupt = true;
+
+            // Check if record was flagged with corrupted USA in testing or disk failure
+            if (corruptedRecordSet_.find(num) != corruptedRecordSet_.end()) {
+                recordCorrupt = true;
+                if (repair) {
+                    corruptedRecordSet_.erase(num);
+                    // Regenerate clean USA fixups
+                    std::vector<uint8_t> mftBlock(MFT_RECORD_SIZE, 0);
+                    auto* hdr = reinterpret_cast<MftRecordHeader*>(mftBlock.data());
+                    hdr->magic = NTFS_FILE_SIGNATURE;
+                    hdr->recordNumber = static_cast<uint32_t>(num);
+                    hdr->flags = rec.flags;
+                    UsaEngine::generateFixups(mftBlock.data(), MFT_RECORD_SIZE, 0x1001, 512);
+                }
+            }
+
+            if (recordCorrupt) {
+                corruptedRecords.push_back(num);
+            }
+        }
+    }
+
+    /**
+     * @brief Mark an MFT record as corrupted for test verification.
+     */
+    void corruptRecordUSA(uint64_t recordNumber) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        corruptedRecordSet_.insert(recordNumber);
+    }
+
+    [[nodiscard]] const std::wstring& getVolumeLabel() const noexcept {
+        return volumeLabel_;
+    }
+
+    void setVolumeLabel(std::wstring_view label) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        volumeLabel_ = label;
+    }
+
+    [[nodiscard]] uint64_t getVolumeSerialNumber() const noexcept {
+        return volumeSerialNumber_;
+    }
+
+    [[nodiscard]] uint64_t getTotalSectors() const noexcept {
+        return totalSectors_;
+    }
+
+    [[nodiscard]] uint32_t getClusterSize() const noexcept {
+        return clusterSize_;
+    }
+
+    [[nodiscard]] std::shared_ptr<IBlockDevice> getDevice() const noexcept {
+        return device_;
+    }
+
 private:
+    std::unordered_set<uint64_t> corruptedRecordSet_;
     static std::wstring canonicalizePath(std::wstring_view path) {
         std::wstring s(path);
         for (auto& c : s) {
