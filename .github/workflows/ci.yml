@@ -1,0 +1,76 @@
+name: TitanNTFS Continuous Integration
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  clean-room-audit:
+    name: Clean-Room Sentinel Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Execute Clean-Room Sentinel Audit
+        run: |
+          node scripts/clean_room_sentinel.js --local
+
+  build-and-test:
+    name: Build & Test (${{ matrix.os }} - ${{ matrix.compiler }})
+    runs-on: ${{ matrix.os }}
+    needs: clean-room-audit
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            compiler: clang
+          - os: ubuntu-latest
+            compiler: gcc
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure CMake (Windows Clang)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -B build -G "Ninja" -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (Windows Clang)
+        if: runner.os == 'Windows'
+        run: |
+          cmake --build build --config Release
+
+      - name: Run Tests (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          .\build\titanntfs_tests.exe
+          .\build\titanntfs_format.exe test_ntfs.img --size 64
+          .\build\titanntfs_check.exe test_ntfs.img
+
+      - name: Configure CMake (Linux GCC)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y g++-13
+          cmake -B build -DCMAKE_CXX_COMPILER=g++-13 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cmake --build build --config Release
+
+      - name: Run Tests (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ./build/titanntfs_tests
+          ./build/titanntfs_format test_ntfs.img --size 64
+          ./build/titanntfs_check test_ntfs.img
