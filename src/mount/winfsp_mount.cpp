@@ -29,7 +29,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Usage: titanntfs_mount <image_path_or_device> <drive_letter:> [options]\n\n";
         std::cout << "Options:\n";
         std::cout << "  --format          Format image as clean NTFS volume before mounting\n";
-        std::cout << "  --label <name>    Set volume label (default: TITAN_NTFS)\n";
+        std::cout << "  --label <name>    Set volume label (default: Local Disk)\n";
         std::cout << "  --cluster <size>  Cluster size in bytes (default: 4096)\n";
         std::cout << "  --size <MB>       Backing file size in megabytes if created (default: 256)\n\n";
         std::cout << "Examples:\n";
@@ -42,7 +42,7 @@ int main(int argc, char* argv[]) {
     std::string devicePath;
     std::string driveLetter;
     bool doFormat = false;
-    std::wstring volumeLabel = L"TITAN_NTFS";
+    std::wstring volumeLabel = L"Local Disk";
     uint32_t clusterSize = 4096;
     uint64_t diskSizeMB = 256;
 

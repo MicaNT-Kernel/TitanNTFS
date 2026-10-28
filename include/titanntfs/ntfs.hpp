@@ -159,7 +159,7 @@ public:
     Status format(
         IBlockDevice& dev,
         uint32_t clusterSize = DEFAULT_CLUSTER_SIZE,
-        std::wstring_view volumeLabel = L"TITAN_NTFS"
+        std::wstring_view volumeLabel = L"Local Disk"
     ) {
         std::lock_guard<std::mutex> lock(mutex_);
         const uint64_t secSize = dev.getBlockSize();
@@ -818,7 +818,7 @@ private:
     uint64_t totalSectors_{0};
     uint32_t clusterSize_{DEFAULT_CLUSTER_SIZE};
     uint64_t volumeSerialNumber_{0x544954414E4E5446ULL};
-    std::wstring volumeLabel_{L"TITAN_NTFS"};
+    std::wstring volumeLabel_{L"Local Disk"};
     uint64_t nextRecordNumber_{MFT_REC_USER_START};
     std::unordered_map<uint64_t, NtfsFileRecord> records_;
 };

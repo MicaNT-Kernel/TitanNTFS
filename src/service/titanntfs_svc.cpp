@@ -131,7 +131,7 @@ public:
         auto st = fs->mount(dev);
         if (!IsSuccess(st)) {
             // Auto format if not yet initialized
-            st = fs->format(*dev, DEFAULT_CLUSTER_SIZE, L"TITAN_NTFS");
+            st = fs->format(*dev, DEFAULT_CLUSTER_SIZE, L"Local Disk");
             if (!IsSuccess(st)) {
                 err = "Failed to mount or initialize NTFS volume.";
                 return -1;

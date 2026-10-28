@@ -8,7 +8,7 @@ void printUsage() {
               << "Usage: titanntfs_format <target_image_or_drive> [options]\n\n"
               << "Options:\n"
               << "  --cluster <size>   Cluster size in bytes (default: 4096 / 4KB)\n"
-              << "  --label <name>     Volume label (default: TITAN_NTFS)\n"
+              << "  --label <name>     Volume label (default: Local Disk)\n"
               << "  --size <MB>        Size in megabytes for new image files (default: 64)\n";
 }
 
@@ -20,7 +20,7 @@ int main(int argc, char* argv[]) {
 
     std::string target = argv[1];
     uint32_t clusterSize = 4096;
-    std::wstring label = L"TITAN_NTFS";
+    std::wstring label = L"Local Disk";
     uint64_t sizeMb = 64;
 
     for (int i = 2; i < argc; ++i) {
